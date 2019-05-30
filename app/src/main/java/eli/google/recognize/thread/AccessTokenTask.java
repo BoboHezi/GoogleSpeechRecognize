@@ -4,6 +4,7 @@ import android.content.Context;
 import android.content.SharedPreferences;
 import android.os.AsyncTask;
 import android.os.Handler;
+import android.text.TextUtils;
 import android.util.Log;
 
 import com.google.auth.Credentials;
@@ -16,6 +17,10 @@ import com.google.cloud.speech.v1.RecognizeResponse;
 import com.google.cloud.speech.v1.SpeechGrpc;
 import com.google.cloud.speech.v1.SpeechRecognitionAlternative;
 import com.google.cloud.speech.v1.SpeechRecognitionResult;
+import com.google.cloud.speech.v1.StreamingRecognitionConfig;
+import com.google.cloud.speech.v1.StreamingRecognitionResult;
+import com.google.cloud.speech.v1.StreamingRecognizeRequest;
+import com.google.cloud.speech.v1.StreamingRecognizeResponse;
 import com.google.protobuf.ByteString;
 
 import java.io.IOException;
@@ -26,6 +31,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Date;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 
 import eli.google.recognize.R;
@@ -142,6 +148,87 @@ public class AccessTokenTask extends AsyncTask<Void, Void, AccessToken> {
                     Math.max(accessToken.getExpirationTime().getTime()
                             - System.currentTimeMillis()
                             - ACCESS_TOKEN_FETCH_MARGIN, ACCESS_TOKEN_EXPIRATION_TOLERANCE));
+        }
+    }
+
+    private StreamObserver<StreamingRecognizeRequest> mRequestObserver;
+
+    private final StreamObserver<StreamingRecognizeResponse> mResponseObserver = new StreamObserver<StreamingRecognizeResponse>() {
+        @Override
+        public void onNext(StreamingRecognizeResponse value) {
+            String text = null;
+            boolean isFinal = false;
+            if (value.getResultsCount() > 0) {
+                final StreamingRecognitionResult result = value.getResults(0);
+                isFinal = result.getIsFinal();
+                if (result.getAlternativesCount() > 0) {
+                    final SpeechRecognitionAlternative alternative = result.getAlternatives(0);
+                    text = alternative.getTranscript();
+                }
+            }
+            Log.i(TAG, "text: " + text);
+            if (text != null) {
+                for (Listener l : listeners) {
+                    l.onSpeechRecognized(text, isFinal);
+                }
+            }
+        }
+
+        @Override
+        public void onError(Throwable t) {
+            Log.i(TAG, "onError");
+        }
+
+        @Override
+        public void onCompleted() {
+            Log.i(TAG, "onCompleted");
+        }
+    };
+
+    private String getDefaultLanguageCode() {
+        final Locale locale = Locale.getDefault();
+        final StringBuilder language = new StringBuilder(locale.getLanguage());
+        final String country = locale.getCountry();
+        if (!TextUtils.isEmpty(country)) {
+            language.append("-");
+            language.append(country);
+        }
+        return language.toString();
+    }
+
+    public void startRecognizing(int sampleRate) {
+        if (mApi == null) {
+            return;
+        }
+
+        mRequestObserver = mApi.streamingRecognize(mResponseObserver);
+        mRequestObserver.onNext(StreamingRecognizeRequest.newBuilder()
+                .setStreamingConfig(StreamingRecognitionConfig.newBuilder()
+                        .setConfig(RecognitionConfig.newBuilder()
+                                .setLanguageCode(getDefaultLanguageCode())
+                                .setEncoding(RecognitionConfig.AudioEncoding.LINEAR16)
+                                .setSampleRateHertz(sampleRate)
+                                .build())
+                        .setInterimResults(true)
+                        .setSingleUtterance(true)
+                        .build())
+                .build());
+    }
+
+    public void recognize(byte[] data, int size) {
+        if (mRequestObserver == null) {
+            return;
+        }
+
+        mRequestObserver.onNext(StreamingRecognizeRequest.newBuilder()
+                .setAudioContent(ByteString.copyFrom(data, 0, size))
+                .build());
+    }
+
+    public void finishRecognizing() {
+        if (mRequestObserver == null) {
+            mRequestObserver.onCompleted();
+            mRequestObserver = null;
         }
     }
 
